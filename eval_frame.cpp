@@ -2,7 +2,6 @@
 #include "cpython_defs.h"
 #include "python_compat.h"
 #include <opcode.h>
-#include <stdbool.h>
 
 // see https://bugs.python.org/issue35886
 #if PY_VERSION_HEX >= 0x03080000
@@ -290,7 +289,8 @@ static void destroy_cache_entry(CacheEntry *e) {
 
 inline static CacheEntry *get_cache_entry(PyCodeObject *code) {
   CacheEntry *extra = NULL;
-  _PyCode_GetExtra((PyObject *)code, cache_entry_extra_index, (void *)&extra);
+  auto v = &extra;
+  _PyCode_GetExtra((PyObject *)code, cache_entry_extra_index, (void **)&extra);
   return extra;
 }
 
@@ -302,7 +302,7 @@ inline static void set_cache_entry(PyCodeObject *code, CacheEntry *extra) {
 inline static PyObject *get_frame_state(PyCodeObject *code) {
   PyObject *extra = NULL;
   _PyCode_GetExtra((PyObject *)code, dynamic_frame_state_extra_index,
-                   (void *)&extra);
+                   (void **)&extra);
   return extra;
 }
 
@@ -428,7 +428,8 @@ inline static PyObject *eval_custom_code(PyThreadState *tstate,
   // THP_EVAL_API_FRAME_OBJECT (_PyInterpreterFrame) is a regular C struct, so
   // it should be safe to use system malloc over Python malloc, e.g.
   // PyMem_Malloc
-  THP_EVAL_API_FRAME_OBJECT *shadow = malloc(size * sizeof(PyObject *));
+  THP_EVAL_API_FRAME_OBJECT *shadow = static_cast<THP_EVAL_API_FRAME_OBJECT *>(
+      malloc(size * sizeof(THP_EVAL_API_FRAME_OBJECT *)));
   if (shadow == NULL) {
     Py_DECREF(func);
     return NULL;
@@ -683,7 +684,7 @@ static PyObject *_custom_eval_frame(PyThreadState *tstate,
     DEBUG_TRACE("create skip %s", name(frame));
     Py_DECREF(result);
     destroy_cache_entry(extra);
-    set_cache_entry(frame->f_code, SKIP_CODE);
+//    set_cache_entry(frame->f_code, SKIP_CODE);
     // Re-enable custom behavior
     eval_frame_callback_set(callback);
     return eval_frame_default(tstate, frame, throw_flag);
@@ -780,7 +781,7 @@ static PyObject *skip_code(PyObject *dummy, PyObject *obj) {
     PyErr_SetString(PyExc_TypeError, "expected a code object");
     return NULL;
   }
-  set_cache_entry((PyCodeObject *)obj, SKIP_CODE);
+//  set_cache_entry((PyCodeObject *)obj, SKIP_CODE);
   Py_RETURN_NONE;
 }
 
