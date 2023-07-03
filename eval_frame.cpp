@@ -7,22 +7,11 @@
 
 namespace py = pybind11;
 
-// see https://bugs.python.org/issue35886
-#if PY_VERSION_HEX >= 0x03080000
 #define Py_BUILD_CORE
-#include <internal/pycore_pystate.h>
-
-// These headers were added in 3.11
-#if IS_PYTHON_3_11_PLUS
 #include <internal/pycore_frame.h>
-#endif
-
+#include <internal/pycore_pystate.h>
 #undef Py_BUILD_CORE
-#endif // PY_VERSION_HEX >= 0x03080000
 
-// All the eval APIs change in 3.11 so we need to decide which one to use on the
-// fly https://docs.python.org/3/c-api/init.html#c._PyFrameEvalFunction
-#if IS_PYTHON_3_11_PLUS
 #define THP_EVAL_API_FRAME_OBJECT _PyInterpreterFrame
 
 // We need to be able to return the _PyInterpreterFrame to python so create
@@ -92,12 +81,6 @@ THPPyInterpreterFrame *THPPyInterpreterFrame_New(_PyInterpreterFrame *frame) {
   self->frame = frame;
   return self;
 }
-
-#else
-#define THP_EVAL_API_FRAME_OBJECT PyFrameObject
-
-#define THP_PyFrame_FastToLocalsWithError PyFrame_FastToLocalsWithError
-#endif
 
 #ifdef _WIN32
 #define unlikely(x) (x)
@@ -248,14 +231,10 @@ static inline PyObject *call_callback(PyObject *callable,
                                       THP_EVAL_API_FRAME_OBJECT *_frame,
                                       long cache_len, PyObject *frame_state) {
 
-#if IS_PYTHON_3_11_PLUS
   THPPyInterpreterFrame *frame = THPPyInterpreterFrame_New(_frame);
   if (frame == NULL) {
     return NULL;
   }
-#else
-  PyObject *frame = Py_NewRef(_frame);
-#endif
   PyObject *res =
       PyObject_CallFunction(callable, "OlO", frame, cache_len, frame_state);
   Py_DECREF(frame);
@@ -416,9 +395,6 @@ inline static PyObject *eval_custom_code(PyThreadState *tstate,
   DEBUG_NULL_CHECK(frame);
   DEBUG_NULL_CHECK(code);
   DEBUG_CHECK(nlocals_new >= nlocals_old);
-
-#if IS_PYTHON_3_11_PLUS
-
   DEBUG_CHECK(ncells == frame->f_code->co_ncellvars);
   DEBUG_CHECK(nfrees == frame->f_code->co_nfreevars);
 
@@ -499,45 +475,11 @@ inline static PyObject *eval_custom_code(PyThreadState *tstate,
 
   Py_DECREF(name_to_idx);
 
-#else
-
-  DEBUG_CHECK(ncells == PyTuple_GET_SIZE(frame->f_code->co_cellvars));
-  DEBUG_CHECK(nfrees == PyTuple_GET_SIZE(frame->f_code->co_freevars));
-
-  THP_EVAL_API_FRAME_OBJECT *shadow =
-      PyFrame_New(tstate, code, frame->f_globals, NULL);
-  if (shadow == NULL) {
-    return NULL;
-  }
-
-  PyObject **fastlocals_old = frame->f_localsplus;
-  PyObject **fastlocals_new = shadow->f_localsplus;
-
-  for (Py_ssize_t i = 0; i < nlocals_old; i++) {
-    Py_XINCREF(fastlocals_old[i]);
-    fastlocals_new[i] = fastlocals_old[i];
-  }
-
-  for (Py_ssize_t i = 0; i < ncells + nfrees; i++) {
-    Py_XINCREF(fastlocals_old[nlocals_old + i]);
-    fastlocals_new[nlocals_new + i] = fastlocals_old[nlocals_old + i];
-  }
-
-#endif
-
   PyObject *result = eval_frame_default(tstate, shadow, throw_flag);
-
-#if IS_PYTHON_3_11_PLUS
 
   THP_PyFrame_Clear(shadow);
   free(shadow);
   Py_DECREF(func);
-
-#else
-
-  Py_DECREF(shadow);
-
-#endif
 
   return result;
 }
@@ -562,15 +504,9 @@ static PyObject *_custom_eval_frame_shim(PyThreadState *tstate,
 static PyObject *_custom_eval_frame(PyThreadState *tstate,
                                     THP_EVAL_API_FRAME_OBJECT *frame,
                                     int throw_flag, PyObject *callback) {
-#if IS_PYTHON_3_11_PLUS
   DEBUG_TRACE("begin %s %s %i %i", name(frame),
               PyUnicode_AsUTF8(frame->f_code->co_filename),
               frame->f_code->co_firstlineno, _PyInterpreterFrame_LASTI(frame));
-#else
-  DEBUG_TRACE("begin %s %s %i %i %i", name(frame),
-              PyUnicode_AsUTF8(frame->f_code->co_filename), frame->f_lineno,
-              frame->f_lasti, frame->f_iblock);
-#endif
 
   if (throw_flag) {
     // When unwinding generators, eval frame is called with throw_flag ==
@@ -876,7 +812,6 @@ PyObject *torch_c_dynamo_eval_frame_init(void) {
     return NULL;
   }
 
-#if IS_PYTHON_3_11_PLUS
   if (PyType_Ready(&THPPyInterpreterFrameType) < 0) {
     return NULL;
   }
@@ -885,7 +820,6 @@ PyObject *torch_c_dynamo_eval_frame_init(void) {
                          (PyObject *)&THPPyInterpreterFrameType) != 0) {
     return NULL;
   }
-#endif
 
   return module;
 }
