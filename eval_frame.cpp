@@ -1,7 +1,11 @@
+#include <pybind11/detail/common.h>
+#include <pybind11/pytypes.h>
 #define PY_SSIZE_T_CLEAN
 #include "cpython_defs.h"
 #include "python_compat.h"
-#include <opcode.h>
+#include <pybind11/pybind11.h>
+
+namespace py = pybind11;
 
 // see https://bugs.python.org/issue35886
 #if PY_VERSION_HEX >= 0x03080000
@@ -73,8 +77,7 @@ static struct PyGetSetDef THPPyInterpreterFrame_properties[] = {
     {NULL}};
 
 static PyTypeObject THPPyInterpreterFrameType = {
-    PyVarObject_HEAD_INIT(NULL, 0).tp_name =
-        "torch._C.dynamo.eval_frame._PyInterpreterFrame",
+    PyVarObject_HEAD_INIT(NULL, 0).tp_name = "pyframe_eval._PyInterpreterFrame",
     .tp_basicsize = sizeof(THPPyInterpreterFrame),
     .tp_flags = Py_TPFLAGS_DEFAULT,
     .tp_getset = THPPyInterpreterFrame_properties,
@@ -117,6 +120,7 @@ THPPyInterpreterFrame *THPPyInterpreterFrame_New(_PyInterpreterFrame *frame) {
   } else {                                                                     \
   }
 
+#define TORCHDYNAMO_DEBUG 1;
 #ifdef TORCHDYNAMO_DEBUG
 
 #define DEBUG_CHECK(cond) CHECK(cond)
@@ -206,6 +210,7 @@ inline static PyObject *eval_frame_default(PyThreadState *tstate,
 }
 
 inline static void enable_eval_frame_shim(PyThreadState *tstate) {
+  DEBUG_TRACE0("enable_eval_frame_shim");
 #if PY_VERSION_HEX >= 0x03090000
   if (_PyInterpreterState_GetEvalFrameFunc(tstate->interp) !=
       &custom_eval_frame_shim) {
@@ -213,6 +218,7 @@ inline static void enable_eval_frame_shim(PyThreadState *tstate) {
     previous_eval_frame = _PyInterpreterState_GetEvalFrameFunc(tstate->interp);
     _PyInterpreterState_SetEvalFrameFunc(tstate->interp,
                                          &custom_eval_frame_shim);
+    DEBUG_TRACE0("_PyInterpreterState_SetEvalFrameFunc");
   }
 #else
   if (tstate->interp->eval_frame != &custom_eval_frame_shim) {
@@ -684,7 +690,7 @@ static PyObject *_custom_eval_frame(PyThreadState *tstate,
     DEBUG_TRACE("create skip %s", name(frame));
     Py_DECREF(result);
     destroy_cache_entry(extra);
-//    set_cache_entry(frame->f_code, SKIP_CODE);
+    //    set_cache_entry(frame->f_code, SKIP_CODE);
     // Re-enable custom behavior
     eval_frame_callback_set(callback);
     return eval_frame_default(tstate, frame, throw_flag);
@@ -694,6 +700,7 @@ static PyObject *_custom_eval_frame(PyThreadState *tstate,
 static int active_dynamo_threads = 0;
 
 static PyObject *increment_working_threads(PyThreadState *tstate) {
+  DEBUG_TRACE0("increment_working_threads");
   active_dynamo_threads = active_dynamo_threads + 1;
   if (active_dynamo_threads > 0) {
     enable_eval_frame_shim(tstate);
@@ -738,7 +745,7 @@ static PyObject *set_eval_frame(PyObject *new_callback, PyThreadState *tstate) {
   return old_callback;
 }
 
-static PyObject *set_eval_frame_py(PyObject *dummy, PyObject *callback) {
+static PyObject *set_eval_frame_py(PyObject *callback) {
   if (callback != Py_None && callback != Py_False &&
       !PyCallable_Check(callback)) {
     DEBUG_TRACE0("arg error");
@@ -781,7 +788,7 @@ static PyObject *skip_code(PyObject *dummy, PyObject *obj) {
     PyErr_SetString(PyExc_TypeError, "expected a code object");
     return NULL;
   }
-//  set_cache_entry((PyCodeObject *)obj, SKIP_CODE);
+  //  set_cache_entry((PyCodeObject *)obj, SKIP_CODE);
   Py_RETURN_NONE;
 }
 
@@ -823,7 +830,7 @@ static PyObject *set_profiler_hooks(PyObject *module, PyObject *args) {
 }
 
 static PyMethodDef _methods[] = {
-    {"set_eval_frame", set_eval_frame_py, METH_O, NULL},
+    //    {"set_eval_frame", set_eval_frame_py, METH_O, NULL},
     {"reset_code", reset_code, METH_O, NULL},
     {"unsupported", unsupported, METH_VARARGS, NULL},
     {"skip_code", skip_code, METH_O, NULL},
@@ -834,7 +841,7 @@ static PyMethodDef _methods[] = {
     {NULL, NULL, 0, NULL}};
 
 static struct PyModuleDef _module = {
-    PyModuleDef_HEAD_INIT, "torch._C._dynamo.eval_frame",
+    PyModuleDef_HEAD_INIT, "eval_frame.eval_frame",
     "Module containing hooks to override eval_frame", -1, _methods};
 
 PyObject *torch_c_dynamo_eval_frame_init(void) {
@@ -881,4 +888,23 @@ PyObject *torch_c_dynamo_eval_frame_init(void) {
 #endif
 
   return module;
+}
+
+PYBIND11_MODULE(pyframe_eval, m) {
+  int result = PyThread_tss_create(&eval_frame_callback_key);
+  CHECK(result == 0);
+
+  Py_INCREF(Py_None);
+  eval_frame_callback_set(Py_None);
+
+  m.def("set_eval_frame", [](const py::object &, const py::function &cb) {
+    set_eval_frame_py(cb.cast<py::object>().ptr());
+  });
+
+  if (PyType_Ready(&THPPyInterpreterFrameType) < 0) {
+    throw pybind11::value_error("THPPyInterpreterFrameType");
+  }
+  Py_INCREF(&THPPyInterpreterFrameType);
+  auto obj = (PyObject *)&THPPyInterpreterFrameType;
+  m.add_object("_PyInterpreterFrame", obj);
 }
