@@ -125,12 +125,12 @@ THPPyInterpreterFrame *THPPyInterpreterFrame_New(_PyInterpreterFrame *frame) {
 // Flag to just run a frame normally
 #define SKIP_CODE ((void *)0x1)
 
-bool is_dynamo_compiling = false;
-static PyObject *guard_fail_hook = NULL;
-static PyObject *guard_error_hook = NULL;
-static PyObject *profiler_start_hook = NULL;
-static PyObject *profiler_end_hook = NULL;
-static PyObject *guard_profiler_name_str = NULL; /* cached py str */
+// bool is_dynamo_compiling = false;
+// static PyObject *guard_fail_hook = NULL;
+// static PyObject *guard_error_hook = NULL;
+// static PyObject *profiler_start_hook = NULL;
+// static PyObject *profiler_end_hook = NULL;
+// static PyObject *guard_profiler_name_str = NULL; /* cached py str */
 
 static size_t cache_entry_extra_index = -1;
 static size_t dynamic_frame_state_extra_index = -2;
@@ -301,32 +301,6 @@ inline static const char *name(THP_EVAL_API_FRAME_OBJECT *frame) {
   return PyUnicode_AsUTF8(frame->f_code->co_name);
 }
 
-static PyObject *call_guard_fail_hook(PyObject *hook, CacheEntry *e,
-                                      size_t index, PyObject *f_locals) {
-  // call debugging logic when a guard fails
-  return PyObject_CallFunction(hook, "OOOnO", e->check_fn, e->code, f_locals,
-                               (Py_ssize_t)index,
-                               (e->next == NULL ? Py_True : Py_False));
-}
-
-static PyObject *call_profiler_start_hook(PyObject *name_str) {
-  if (profiler_start_hook == NULL)
-    return NULL;
-  return PyObject_CallOneArg(profiler_start_hook, name_str);
-}
-
-static void call_profiler_end_hook(PyObject *record) {
-  // 'record' obj is the return value of calling _start_hook()
-  if (profiler_end_hook == NULL || record == NULL)
-    return;
-  PyObject *res = PyObject_CallOneArg(profiler_end_hook, record);
-  if (res == NULL) {
-    PyErr_WriteUnraisable(profiler_end_hook);
-    return;
-  }
-  Py_DECREF(res);
-}
-
 // Return value: borrowed reference
 // Is either Py_None or a PyCodeObject
 static PyObject *lookup(CacheEntry *e, THP_EVAL_API_FRAME_OBJECT *frame,
@@ -338,16 +312,6 @@ static PyObject *lookup(CacheEntry *e, THP_EVAL_API_FRAME_OBJECT *frame,
   PyObject *f_locals = frame->f_locals;
   PyObject *valid = PyObject_CallOneArg(e->check_fn, f_locals);
   if (unlikely(valid == NULL)) {
-    if (guard_error_hook != NULL) {
-      PyObject *type, *value, *traceback;
-      PyErr_Fetch(&type, &value, &traceback);
-      PyObject *r = call_guard_fail_hook(guard_error_hook, e, index, f_locals);
-      if (r == NULL) {
-        return NULL;
-      }
-      Py_DECREF(r);
-      PyErr_Restore(type, value, traceback);
-    }
     return NULL;
   }
   Py_DECREF(valid);
@@ -362,13 +326,6 @@ static PyObject *lookup(CacheEntry *e, THP_EVAL_API_FRAME_OBJECT *frame,
       set_cache_entry(frame->f_code, e);
     }
     return (PyObject *)e->code;
-  }
-  if (unlikely(guard_fail_hook != NULL)) {
-    PyObject *r = call_guard_fail_hook(guard_fail_hook, e, index, f_locals);
-    if (r == NULL) {
-      return NULL;
-    }
-    Py_DECREF(r);
   }
   return lookup(e->next, frame, e, index + 1);
 }
@@ -547,27 +504,6 @@ static PyObject *_custom_eval_frame(PyThreadState *tstate,
     return NULL;
   }
 
-  // A callback of Py_False indicates "run only" mode, the cache is checked, but
-  // we never compile.
-  if (callback == Py_False) {
-    DEBUG_TRACE("In run only mode %s", name(frame));
-    PyObject *hook_record = call_profiler_start_hook(guard_profiler_name_str);
-    PyObject *maybe_cached_code = lookup(extra, frame, NULL, 0);
-    call_profiler_end_hook(hook_record);
-    Py_XDECREF(hook_record);
-
-    if (maybe_cached_code == NULL) {
-      // guard eval failed, keep propagating
-      return NULL;
-    } else if (maybe_cached_code == Py_None) {
-      DEBUG_TRACE("cache miss %s", name(frame));
-      return eval_frame_default(tstate, frame, throw_flag);
-    }
-    PyCodeObject *cached_code = (PyCodeObject *)maybe_cached_code;
-    // used cached version
-    DEBUG_TRACE("cache hit %s", name(frame));
-    return eval_custom_code(tstate, frame, cached_code, throw_flag);
-  }
   DEBUG_CHECK(PyDict_CheckExact(frame->f_locals));
   DEBUG_CHECK(PyDict_CheckExact(frame->f_globals));
   DEBUG_CHECK(PyDict_CheckExact(frame->f_builtins));
@@ -577,21 +513,6 @@ static PyObject *_custom_eval_frame(PyThreadState *tstate,
   // in the shim.
   eval_frame_callback_set(Py_None);
 
-  PyObject *hook_record = call_profiler_start_hook(guard_profiler_name_str);
-  PyObject *maybe_cached_code = lookup(extra, frame, NULL, 0);
-  call_profiler_end_hook(hook_record);
-  Py_XDECREF(hook_record);
-  if (maybe_cached_code == NULL) {
-    // Python error
-    return NULL;
-  } else if (maybe_cached_code != Py_None) {
-    PyCodeObject *cached_code = (PyCodeObject *)maybe_cached_code;
-    // used cached version
-    DEBUG_TRACE("cache hit %s", name(frame));
-    // Re-enable custom behavior
-    eval_frame_callback_set(callback);
-    return eval_custom_code(tstate, frame, cached_code, throw_flag);
-  }
   // cache miss
 
   PyObject *frame_state = get_frame_state(frame->f_code);
@@ -677,7 +598,6 @@ static PyObject *set_eval_frame(PyObject *new_callback, PyThreadState *tstate) {
   // is installed.
   eval_frame_callback_set(new_callback);
 
-  is_dynamo_compiling = !(new_callback == Py_None);
   return old_callback;
 }
 
@@ -728,52 +648,11 @@ static PyObject *skip_code(PyObject *dummy, PyObject *obj) {
   Py_RETURN_NONE;
 }
 
-static PyObject *set_guard_fail_hook(PyObject *dummy, PyObject *obj) {
-  if (obj == Py_None) {
-    obj = NULL;
-  }
-  Py_XSETREF(guard_fail_hook, Py_XNewRef(obj));
-  Py_RETURN_NONE;
-}
-
-static PyObject *set_guard_error_hook(PyObject *dummy, PyObject *obj) {
-  if (obj == Py_None) {
-    obj = NULL;
-  }
-  Py_XSETREF(guard_error_hook, Py_XNewRef(obj));
-  Py_RETURN_NONE;
-}
-
-static PyObject *clear_profiler_hooks(PyObject *module, PyObject *unused) {
-  Py_CLEAR(profiler_start_hook);
-  Py_CLEAR(profiler_end_hook);
-  Py_RETURN_NONE;
-}
-
-static PyObject *set_profiler_hooks(PyObject *module, PyObject *args) {
-  PyObject *start = NULL;
-  PyObject *end = NULL;
-  if (!PyArg_ParseTuple(args, "OO:set_profiler_hooks", &start, &end)) {
-    return NULL;
-  }
-  if (start == Py_None || end == Py_None) {
-    clear_profiler_hooks(module, NULL);
-  } else {
-    Py_XSETREF(profiler_start_hook, Py_NewRef(start));
-    Py_XSETREF(profiler_end_hook, Py_NewRef(end));
-  }
-  Py_RETURN_NONE;
-}
-
 static PyMethodDef _methods[] = {
     //    {"set_eval_frame", set_eval_frame_py, METH_O, NULL},
     {"reset_code", reset_code, METH_O, NULL},
     {"unsupported", unsupported, METH_VARARGS, NULL},
     {"skip_code", skip_code, METH_O, NULL},
-    {"set_guard_fail_hook", set_guard_fail_hook, METH_O, NULL},
-    {"set_guard_error_hook", set_guard_error_hook, METH_O, NULL},
-    {"set_profiler_hooks", set_profiler_hooks, METH_VARARGS, NULL},
-    {"clear_profiler_hooks", clear_profiler_hooks, METH_NOARGS, NULL},
     {NULL, NULL, 0, NULL}};
 
 static struct PyModuleDef _module = {
@@ -793,11 +672,6 @@ PyObject *torch_c_dynamo_eval_frame_init(void) {
     PyErr_SetString(
         PyExc_RuntimeError,
         "dynamo: unable to register dynamic_frame_state extra index");
-    return NULL;
-  }
-
-  guard_profiler_name_str = PyUnicode_FromString("TorchDynamo Cache Lookup");
-  if (guard_profiler_name_str == NULL) {
     return NULL;
   }
 
