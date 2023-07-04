@@ -1,0 +1,75 @@
+name: Build and release wheels
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build_wheels:
+    strategy:
+      matrix:
+        os: [ubuntu-20.04, macos-latest]
+    name: Build wheels on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: 3.11
+
+      - name: Build wheels
+        run: |
+          pip install -r requirements.txt
+          if [ x"${{ matrix.os }}" == x"ubuntu-20.04" ]; then
+            CMAKE_GENERATOR=Ninja pip wheel . -w wheelhouse -v
+          else
+            pip install cibuildwheel
+            cibuildwheel --platform macos
+          fi
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: build_artifact
+          path: ./wheelhouse/*.whl
+
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    needs: [ build_wheels ]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: build_artifact
+          path: ./wheelhouse
+
+      - name: Set up a release page
+        id: setup_release
+        run: |
+          PYFRAME_EVAL_VERSION=$(python setup.py --version)
+          tag_name="$PYFRAME_EVAL_VERSION"
+          release_title="pyframe_eval $PYFRAME_EVAL_VERSION"
+          echo "pyframe_eval $PYFRAME_EVAL_VERSION created at $(date)" > body.md
+          echo "tag_name=${tag_name}" >> $GITHUB_OUTPUT
+          echo "release_title=${release_title}" >> $GITHUB_OUTPUT
+
+      - name: Upload tarballs
+        uses: ncipollo/release-action@v1
+        with:
+          artifacts: "./wheelhouse/*.whl"
+          bodyFile: body.md
+          token: "${{ secrets.GITHUB_TOKEN }}"
+          tag: "${{ steps.setup_release.outputs.tag_name }}"
+          name: "${{ steps.setup_release.outputs.release_title }}"
+          allowUpdates: true
+          replacesArtifacts: true
+          removeArtifacts: false

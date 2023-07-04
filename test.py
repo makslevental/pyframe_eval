@@ -7,6 +7,32 @@ from typing import Any
 import pyframe_eval
 
 
+def bob():
+    x = 1
+    y = 2
+    z = x + y
+    return z
+
+
+class Foo:
+    def bar(self, a):
+        w = bob() + a
+        x = 1
+        y = 2
+        z = x + y + w
+        return z
+
+    def __call__(self, a):
+        w = self.bar(a) + a
+        x = 1
+        y = 2
+        z = x + y + w
+        return z
+
+
+foo = Foo()
+
+
 def smoke_test_callback(frame):
     print("frame func", frame.f_func)
     # print(frame.f_globals)
@@ -29,30 +55,8 @@ def smoke_test_callback(frame):
 pyframe_eval.set_eval_frame(None, smoke_test_callback)
 
 
-def bob():
-    x = 1
-    y = 2
-    z = x + y
-    return z
-
-
-def bar():
-    w = bob()
-    x = 1
-    y = 2
-    z = x + y + w
-    return z
-
-
-def foo():
-    w = bar()
-    x = 1
-    y = 2
-    z = x + y + w
-    print(z)
-
-
-foo()
+r = foo(1)
+assert r == 11
 
 pyframe_eval.set_eval_frame(None, None)
 
@@ -86,4 +90,7 @@ def rewrite_callback(frame):
 
 pyframe_eval.set_eval_frame(None, rewrite_callback)
 
-foo()
+r = foo(2)
+assert r == 94
+
+pyframe_eval.set_eval_frame(None, None)

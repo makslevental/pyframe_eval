@@ -102,6 +102,8 @@ inline static PyObject *evalCustomCode(PyThreadState *tstate,
   DEBUG_NULL_CHECK(code);
   DEBUG_CHECK(nlocals_new >= nlocals_old);
   DEBUG_CHECK(ncells == frame->f_code->co_ncellvars);
+  DEBUG_TRACE("code->co_nfreevars: %zi, frame->f_code->co_nfreevars: %i", nfrees,
+              frame->f_code->co_nfreevars);
   DEBUG_CHECK(nfrees == frame->f_code->co_nfreevars);
 
   // Generate Python function object and _PyInterpreterFrame in a way similar to
@@ -125,7 +127,7 @@ inline static PyObject *evalCustomCode(PyThreadState *tstate,
 
   Py_INCREF(func);
   // consumes reference to func
-  _PyFrame_InitializeSpecials(shadow, func, NULL, code->co_nlocalsplus);
+  _PyFrame_InitializeSpecials(shadow, func, nullptr, code->co_nlocalsplus);
 
   PyObject **fastlocals_old = frame->localsplus;
   PyObject **fastlocals_new = shadow->localsplus;
