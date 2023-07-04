@@ -49,10 +49,11 @@ def foo():
     x = 1
     y = 2
     z = x + y + w
-    print(z)
+    return z
 
 
-foo()
+r = foo()
+assert r == 9
 
 pyframe_eval.set_eval_frame(None, None)
 
@@ -86,4 +87,5 @@ def rewrite_callback(frame):
 
 pyframe_eval.set_eval_frame(None, rewrite_callback)
 
-foo()
+r = foo()
+assert r == 90
