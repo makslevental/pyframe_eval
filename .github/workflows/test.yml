@@ -14,7 +14,7 @@ jobs:
   test-x86:
     strategy:
       matrix:
-        os: [ ubuntu-20.04, macos-latest ]
+        os: [ ubuntu-20.04, macos-latest, windows-latest ]
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -26,8 +26,18 @@ jobs:
         with:
           python-version: 3.11
 
+      - name: Add clang path to $PATH env
+        shell: bash
+        if: runner.os == 'windows-latest'
+        run: |
+          ls -l C:\msys64\mingw64\bin
+          echo "PATH=$PATH:C:\msys64\mingw64\bin" >> $GITHUB_ENV
+          echo "CXX=/c/msys64/mingw64/bin/clang++.exe" >> $GITHUB_ENV
+          echo "CC=/c/msys64/mingw64/bin/clang.exe" >> $GITHUB_ENV
+
       - name: Test
+        shell: bash
         run: |
           pip install -r requirements.txt
           pip install . -v
-          python test.py
+          CMAKE_GENERATOR=Ninja python test.py
