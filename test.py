@@ -1,14 +1,18 @@
 import ast
 import inspect
+import io
+from contextlib import redirect_stdout
 from textwrap import dedent
-from types import CodeType
+from types import CodeType, FunctionType
 from typing import Any
 
 import pyframe_eval
 
+k = 5
+
 
 def bob():
-    x = 1
+    x = 1 + k
     y = 2
     z = x + y
     return z
@@ -34,31 +38,32 @@ foo = Foo()
 
 
 def smoke_test_callback(frame):
-    print("frame func", frame.f_func)
-    # print(frame.f_globals)
-    # print(frame.f_builtins)
-
-    # fails with TypeError: Unable to convert function return value to a Python type! The signature was
-    # 	(arg0: pyframe_eval._PyInterpreterFrame) -> object
-    # print(frame.f_locals)
-
-    print("frame code obj", frame.f_code)
-
-    # fails with TypeError: Unable to convert function return value to a Python type! The signature was
-    # 	(arg0: pyframe_eval._PyInterpreterFrame) -> object
-    # print(frame.frame_obj)
-    # previous frame is null...
-    # print(frame.previous)
-    return
+    # print("frame", frame)
+    print(
+        frame.f_func.__name__,
+        frame.f_code.co_filename,
+        frame.f_code.co_firstlineno,
+    )
+    return frame.f_code
 
 
-pyframe_eval.set_eval_frame(None, smoke_test_callback)
+f = io.StringIO()
+with redirect_stdout(f):
+    pyframe_eval.set_rewrite_code_callback(None, smoke_test_callback)
+    pyframe_eval.enable_eval_frame(None, True)
 
+    r = foo(1)
+    assert r == 16
 
-r = foo(1)
-assert r == 11
+    pyframe_eval.enable_eval_frame(None, False)
 
-pyframe_eval.set_eval_frame(None, None)
+assert f.getvalue() == dedent(
+    f"""\
+{Foo.__call__.__name__} {Foo.__call__.__code__.co_filename} {Foo.__call__.__code__.co_firstlineno}
+{Foo.bar.__name__} {Foo.bar.__code__.co_filename} {Foo.bar.__code__.co_firstlineno}
+{bob.__name__} {bob.__code__.co_filename} {bob.__code__.co_firstlineno}
+"""
+)
 
 
 class ScaleConstants(ast.NodeTransformer):
@@ -66,8 +71,36 @@ class ScaleConstants(ast.NodeTransformer):
         self.s = s
 
     def visit_Constant(self, node: ast.Constant) -> Any:
-        node.value *= self.s
+        if node.value:
+            node.value *= self.s
         return node
+
+
+def rebuild_func(new_code, frame):
+    new_code = new_code.replace(co_name=new_code.co_name + "__updated")
+    updated_f = FunctionType(
+        code=new_code,
+        globals={
+            **frame.f_func.__globals__,
+            **{
+                fr: frame.f_func.__closure__[i].cell_contents
+                for i, fr in enumerate(frame.f_func.__code__.co_freevars)
+            },
+        },
+        name=frame.f_func.__name__,
+        argdefs=frame.f_func.__defaults__,
+    )
+    updated_f.__qualname__ = frame.f_func.__qualname__
+    updated_f.__annotations__ = frame.f_func.__annotations__
+
+    return updated_f
+
+
+def eval_custom_code(new_code, frame):
+    updated_f = rebuild_func(new_code, frame)
+    args = frame.localsplus[: new_code.co_argcount]
+    pyframe_eval.enable_eval_frame(None, True)
+    return updated_f(*args)
 
 
 def rewrite_callback(frame):
@@ -88,9 +121,11 @@ def rewrite_callback(frame):
     return f_code_o
 
 
-pyframe_eval.set_eval_frame(None, rewrite_callback)
+pyframe_eval.set_rewrite_code_callback(None, rewrite_callback)
+pyframe_eval.set_eval_custom_code_callback(None, eval_custom_code)
+pyframe_eval.enable_eval_frame(None, True)
 
 r = foo(2)
-assert r == 94
+assert r == 99
 
-pyframe_eval.set_eval_frame(None, None)
+pyframe_eval.enable_eval_frame(None, False)

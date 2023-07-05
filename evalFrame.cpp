@@ -1,6 +1,8 @@
 #include <pybind11/detail/common.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/pytypes.h>
+#include <pybind11/stl.h>
+#include <pytypedefs.h>
 
 namespace py = pybind11;
 
@@ -33,6 +35,8 @@ namespace py = pybind11;
   } else {                                                                     \
   }
 
+//#define DEBUG
+
 #ifdef DEBUG
 
 #define DEBUG_CHECK(cond) CHECK(cond)
@@ -51,41 +55,82 @@ namespace py = pybind11;
 
 #endif
 
-static py::object globalCb;
-
-#define DECLARE_PYOBJ_ATTR(name)                                               \
-  PyObject *name() const {                                                     \
-    PyObject *res = (PyObject *)this->frame->name;                             \
-    /*Increment the reference count for object o. The object may be NULL, in   \
-     * which case the macro has no effect.*/                                   \
-    Py_XINCREF(res);                                                           \
-    return res;                                                                \
-  }
+static py::object rewriteCodeCb = py::none();
+static py::object evalCustomCodeCb = py::none();
 
 struct PyInterpreterFrame {
   PyInterpreterFrame(_PyInterpreterFrame *frame) : frame(frame) {}
 
-  DECLARE_PYOBJ_ATTR(f_builtins)
-  DECLARE_PYOBJ_ATTR(f_code)
-  DECLARE_PYOBJ_ATTR(f_func)
-  DECLARE_PYOBJ_ATTR(f_globals)
-  DECLARE_PYOBJ_ATTR(f_locals)
-  DECLARE_PYOBJ_ATTR(frame_obj)
+  PyObject *f_builtins() const {
+    PyObject *res = this->frame->f_builtins;
+    Py_XINCREF(res);
+    return res;
+  }
+  PyCodeObject *f_code() const {
+    PyCodeObject *res = this->frame->f_code;
+    Py_XINCREF(res);
+    return res;
+  }
+  PyFunctionObject *f_func() const {
+    PyFunctionObject *res = this->frame->f_func;
+    Py_XINCREF(res);
+    return res;
+  }
+  PyObject *f_globals() const {
+    PyObject *res = this->frame->f_globals;
+    Py_XINCREF(res);
+    return res;
+  }
+  PyObject *f_locals() const {
+    PyObject *res = this->frame->f_locals;
+    Py_XINCREF(res);
+    return res;
+  }
+
+  PyFrameObject *frame_obj() const {
+    PyFrameObject *res = this->frame->frame_obj;
+    Py_XINCREF(res);
+    return res;
+  }
+
   PyInterpreterFrame *previous() const {
-    auto *res = new PyInterpreterFrame(this->frame->previous);
+    PyInterpreterFrame *res;
+    if (this->frame->previous)
+      res = new PyInterpreterFrame(this->frame->previous);
     return res;
   }
 
   PyObject *f_lasti() const {
     return PyLong_FromLong(_PyInterpreterFrame_LASTI(this->frame));
   }
+
+  std::vector<PyObject *> localsplus() const {
+    PyObject **res = _PyFrame_GetLocalsArray(this->frame);
+    std::vector<PyObject *> localsplus(
+        res, res + this->frame->f_code->co_nlocalsplus);
+    for (auto &item : localsplus)
+      Py_XINCREF(item);
+    return localsplus;
+  }
+
   _PyInterpreterFrame *frame; // Borrowed reference
 };
-#undef DECLARE_PYOBJ_ATTR
 
 inline static const char *name(_PyInterpreterFrame *frame) {
   DEBUG_CHECK(PyUnicode_Check(frame->f_code->co_name));
   return PyUnicode_AsUTF8(frame->f_code->co_name);
+}
+
+static PyObject *evalFrameTrampoline(PyThreadState *tstate,
+                                     _PyInterpreterFrame *frame, int exc);
+
+void enableEvalFrame(bool enable) {
+  if (enable)
+    _PyInterpreterState_SetEvalFrameFunc(PyInterpreterState_Get(),
+                                         evalFrameTrampoline);
+  else
+    _PyInterpreterState_SetEvalFrameFunc(PyInterpreterState_Get(),
+                                         _PyEval_EvalFrameDefault);
 }
 
 inline static PyObject *evalCustomCode(PyThreadState *tstate,
@@ -102,8 +147,8 @@ inline static PyObject *evalCustomCode(PyThreadState *tstate,
   DEBUG_NULL_CHECK(code);
   DEBUG_CHECK(nlocals_new >= nlocals_old);
   DEBUG_CHECK(ncells == frame->f_code->co_ncellvars);
-  DEBUG_TRACE("code->co_nfreevars: %zi, frame->f_code->co_nfreevars: %i", nfrees,
-              frame->f_code->co_nfreevars);
+  DEBUG_TRACE("code->co_nfreevars: %zi, frame->f_code->co_nfreevars: %i",
+              nfrees, frame->f_code->co_nfreevars);
   DEBUG_CHECK(nfrees == frame->f_code->co_nfreevars);
 
   // Generate Python function object and _PyInterpreterFrame in a way similar to
@@ -118,7 +163,7 @@ inline static PyObject *evalCustomCode(PyThreadState *tstate,
   // _EVAL_API_FRAME_OBJECT (_PyInterpreterFrame) is a regular C struct, so
   // it should be safe to use system malloc over Python malloc, e.g.
   // PyMem_Malloc
-  auto *shadow =
+  _PyInterpreterFrame *shadow =
       (_PyInterpreterFrame *)malloc(size * sizeof(_PyInterpreterFrame *));
   if (shadow == nullptr) {
     Py_DECREF(func);
@@ -192,32 +237,66 @@ inline static PyObject *evalCustomCode(PyThreadState *tstate,
   return result;
 }
 
+static size_t dynamic_frame_state_extra_index = -2;
+
+// inline static PyObject *getFrameState(PyCodeObject *code) {
+//   PyObject *extra = nullptr;
+//   _PyCode_GetExtra((PyObject *)code, dynamic_frame_state_extra_index,
+//                    (void **)&extra);
+//   return extra;
+// }
+//
+// inline static void setFrameState(PyCodeObject *code, PyObject *extra) {
+//   _PyCode_SetExtra((PyObject *)code, dynamic_frame_state_extra_index, extra);
+// }
+
+inline bool endsWith(std::string const &value, std::string const &ending) {
+  if (ending.size() > value.size())
+    return false;
+  return std::equal(ending.rbegin(), ending.rend(), value.rbegin());
+}
+
 static PyObject *evalFrameTrampoline(PyThreadState *tstate,
                                      _PyInterpreterFrame *frame, int exc) {
-  DEBUG_TRACE("begin %s %s %i %i", name(frame),
+  std::string name_ = name(frame);
+  DEBUG_TRACE("begin %s %s %i %i", name_.data(),
               PyUnicode_AsUTF8(frame->f_code->co_filename),
               frame->f_code->co_firstlineno, _PyInterpreterFrame_LASTI(frame));
   auto thp = PyInterpreterFrame(frame);
   // this prevents recursion/reentrancy - ie the callback stackframe brings you
   // back here
-  _PyInterpreterState_SetEvalFrameFunc(PyInterpreterState_Get(),
-                                       _PyEval_EvalFrameDefault);
-  PyObject *result;
-  if (!globalCb.is_none()) {
-    auto maybeCode = globalCb(thp);
-    DEBUG_TRACE0("done calling function");
+  enableEvalFrame(false);
+  PyObject *result = nullptr;
+  if (!rewriteCodeCb.is_none() && !endsWith(name_, "__updated")) {
+    enableEvalFrame(false);
+    auto maybeCode = rewriteCodeCb(thp);
+    DEBUG_TRACE0("done calling rewriteCodeCb");
     if (!maybeCode.is_none()) {
-      auto code = (PyCodeObject *)(maybeCode.ptr());
-      DEBUG_NULL_CHECK(code)
-      _PyInterpreterState_SetEvalFrameFunc(PyInterpreterState_Get(),
-                                           evalFrameTrampoline);
-      result = evalCustomCode(tstate, frame, code, exc);
-    } else
-      result = _PyEval_EvalFrameDefault(tstate, frame, exc);
-  } else
+      DEBUG_TRACE0("maybeCode is not None");
+      if (!evalCustomCodeCb.is_none()) {
+        DEBUG_TRACE0("evalCustomCodeCb is not None");
+        enableEvalFrame(false);
+        auto res = evalCustomCodeCb(maybeCode, thp);
+        if (res && !res.is_none()) {
+          DEBUG_TRACE0("res is not None");
+          result = res.ptr();
+        } else {
+          DEBUG_TRACE0("res is None");
+        }
+      } else {
+        auto code = (PyCodeObject *)(maybeCode.ptr());
+        enableEvalFrame(true);
+        result = evalCustomCode(tstate, frame, code, exc);
+      }
+    }
+  }
+  enableEvalFrame(true);
+  if (!result) {
+    DEBUG_TRACE0("result is None");
     result = _PyEval_EvalFrameDefault(tstate, frame, exc);
-  _PyInterpreterState_SetEvalFrameFunc(PyInterpreterState_Get(),
-                                       evalFrameTrampoline);
+  } else {
+    DEBUG_TRACE0("result is not None");
+  }
   return result;
 }
 
@@ -226,34 +305,66 @@ PYBIND11_MODULE(pyframe_eval, m) {
   .def_property_readonly(                                                      \
       "f_" #name,                                                              \
       [](const PyInterpreterFrame &self) {                                     \
-        return py::reinterpret_borrow<py::object>(                             \
-            (PyObject *)self.f_##name());                                      \
+        auto ob = (PyObject *)self.f_##name();                                 \
+        if (ob)                                                                \
+          return py::reinterpret_borrow<py::object>(ob);                       \
+        else                                                                   \
+          return py::none().cast<py::object>();                                \
       },                                                                       \
       py::return_value_policy::reference)
 
-  py::class_<PyInterpreterFrame>(m, "_PyInterpreterFrame")
-      DECLARE_PYOBJ_ATTR(builtins) DECLARE_PYOBJ_ATTR(code)
-          DECLARE_PYOBJ_ATTR(func) DECLARE_PYOBJ_ATTR(globals)
-              DECLARE_PYOBJ_ATTR(lasti) DECLARE_PYOBJ_ATTR(locals)
-                  .def_property_readonly(
-                      "previous",
-                      [](const PyInterpreterFrame &self) {
-                        return py::reinterpret_borrow<py::object>(
-                            (PyObject *)self.previous());
-                      },
-                      py::return_value_policy::reference)
-                  .def_property_readonly(
-                      "frame_obj",
-                      [](const PyInterpreterFrame &self) {
-                        return py::reinterpret_borrow<py::object>(
-                            (PyObject *)self.frame_obj());
-                      },
-                      py::return_value_policy::reference);
+  py::class_<PyInterpreterFrame>(m, "_PyInterpreterFrame") DECLARE_PYOBJ_ATTR(
+      builtins) DECLARE_PYOBJ_ATTR(code) DECLARE_PYOBJ_ATTR(func)
+      DECLARE_PYOBJ_ATTR(globals) DECLARE_PYOBJ_ATTR(lasti)
+          DECLARE_PYOBJ_ATTR(locals)
+              .def_property_readonly(
+                  "previous",
+                  [](const PyInterpreterFrame &self) {
+                    auto ob = self.previous();
+                    if (ob)
+                      return py::cast(ob);
+                    else
+                      return py::none().cast<py::object>();
+                  },
+                  py::return_value_policy::reference)
+              .def_property_readonly(
+                  "frame_obj",
+                  [](const PyInterpreterFrame &self) {
+                    auto ob = self.frame_obj();
+                    if (ob)
+                      return py::reinterpret_borrow<py::object>((PyObject *)ob);
+                    else
+                      return py::none().cast<py::object>();
+                  },
+                  py::return_value_policy::reference)
+              .def_property_readonly(
+                  "localsplus",
+                  [](const PyInterpreterFrame &self) {
+                    auto localsplus = self.localsplus();
+                    py::list localsplus_(localsplus.size());
+                    for (int j = 0; j < localsplus.size(); ++j) {
+                      if (localsplus[j])
+                        localsplus_[j] =
+                            py::reinterpret_borrow<py::object>(localsplus[j]);
+                      else
+                        localsplus_[j] = py::none();
+                    }
+                    return localsplus_;
+                  },
+                  py::return_value_policy::reference);
 #undef DECLARE_PYOBJ_ATTR
 
-  m.def("set_eval_frame", [](const py::object &, py::object cb) {
-    globalCb = std::move(cb);
-    _PyInterpreterState_SetEvalFrameFunc(PyInterpreterState_Get(),
-                                         evalFrameTrampoline);
+  m.def("set_rewrite_code_callback", [](const py::object &, py::object cb) {
+    rewriteCodeCb = std::move(cb);
+  });
+  m.def("set_eval_custom_code_callback", [](const py::object &, py::object cb) {
+    evalCustomCodeCb = std::move(cb);
+  });
+  m.def("enable_eval_frame",
+        [](const py::object &, bool enable) { enableEvalFrame(enable); });
+
+  m.def("co_localsplusnames", [](const py::object &, const py::object &co) {
+    return py::reinterpret_borrow<py::object>(
+        ((PyCodeObject *)co.ptr())->co_localsplusnames);
   });
 }
