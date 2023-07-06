@@ -26,8 +26,8 @@ jobs:
         run: |
           ls -l C:\msys64\mingw64\bin
           echo "PATH=$PATH:C:\msys64\mingw64\bin" >> $GITHUB_ENV
-          echo "CXX=/c/msys64/mingw64/bin/clang++.exe" >> $GITHUB_ENV
-          echo "CC=/c/msys64/mingw64/bin/clang.exe" >> $GITHUB_ENV
+          echo "CXX=clang++.exe" >> $GITHUB_ENV
+          echo "CC=clang.exe" >> $GITHUB_ENV
 
       - name: Build wheels
         shell: bash
