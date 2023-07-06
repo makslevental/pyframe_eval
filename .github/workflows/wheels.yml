@@ -5,45 +5,22 @@ on:
 
 jobs:
   build_wheels:
-    strategy:
-      matrix:
-        os: [ubuntu-20.04, macos-latest, windows-latest]
     name: Build wheels on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-22.04, windows-2022, macos-11]
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v3
-
-      - name: Setup Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: 3.11
-
-      - name: Add clang path to $PATH env
-        shell: bash
-        if: runner.os == 'windows-latest'
-        run: |
-          ls -l C:\msys64\mingw64\bin
-          echo "PATH=$PATH:C:\msys64\mingw64\bin" >> $GITHUB_ENV
-          echo "CXX=clang++.exe" >> $GITHUB_ENV
-          echo "CC=clang.exe" >> $GITHUB_ENV
+      - uses: actions/checkout@v3
 
       - name: Build wheels
-        shell: bash
-        run: |
-          pip install -r requirements.txt
-          if [ x"${{ matrix.os }}" == x"macos-latest" ]; then
-            pip install cibuildwheel
-            cibuildwheel --platform macos
-          else
-            CMAKE_GENERATOR=Ninja pip wheel . -w wheelhouse -v
-          fi
+        uses: pypa/cibuildwheel@v2.13.1
 
       - uses: actions/upload-artifact@v3
         with:
           name: build_artifact
-          path: ./wheelhouse/pyframe*.whl
+          path: ./wheelhouse/*.whl
 
   release:
     runs-on: ubuntu-latest

@@ -26,26 +26,10 @@ jobs:
         with:
           python-version: 3.11
 
-      - name: Add clang path to $PATH env
-        shell: bash
-        if: runner.os == 'windows-latest'
-        run: |
-          ls -l C:\msys64\mingw64\bin
-          echo "PATH=$PATH:C:\msys64\mingw64\bin" >> $GITHUB_ENV
-          echo "CXX=clang++.exe" >> $GITHUB_ENV
-          echo "CC=clang.exe" >> $GITHUB_ENV
-
       - name: Build wheels
         shell: bash
         run: |
-          pip install -r requirements.txt
-          if [ x"${{ matrix.os }}" == x"macos-latest" ]; then
-            pip install cibuildwheel
-            cibuildwheel --platform macos
-          else
-            CMAKE_GENERATOR=Ninja pip wheel . -w wheelhouse -v
-          fi
-          pip install pyframe_eval -f wheelhouse
+          pip install . -v
 
       - name: Test
         shell: bash
