@@ -3,7 +3,7 @@ import inspect
 import io
 from contextlib import redirect_stdout
 from textwrap import dedent
-from types import CodeType, FunctionType
+from types import CodeType
 from typing import Any
 
 import pyframe_eval
@@ -38,7 +38,6 @@ foo = Foo()
 
 
 def smoke_test_callback(frame):
-    # print("frame", frame)
     print(
         frame.f_func.__name__,
         frame.f_code.co_filename,
@@ -48,20 +47,16 @@ def smoke_test_callback(frame):
 
 
 f = io.StringIO()
-with redirect_stdout(f):
-    pyframe_eval.set_rewrite_code_callback(None, smoke_test_callback)
-    pyframe_eval.enable_eval_frame(None, True)
-
+with redirect_stdout(f), pyframe_eval.Dynamo(smoke_test_callback):
     r = foo(1)
     assert r == 16
-
-    pyframe_eval.enable_eval_frame(None, False)
 
 assert f.getvalue() == dedent(
     f"""\
 {Foo.__call__.__name__} {Foo.__call__.__code__.co_filename} {Foo.__call__.__code__.co_firstlineno}
 {Foo.bar.__name__} {Foo.bar.__code__.co_filename} {Foo.bar.__code__.co_firstlineno}
 {bob.__name__} {bob.__code__.co_filename} {bob.__code__.co_firstlineno}
+{pyframe_eval.Dynamo.__exit__.__name__} {pyframe_eval.Dynamo.__exit__.__code__.co_filename} {pyframe_eval.Dynamo.__exit__.__code__.co_firstlineno}
 """
 )
 
@@ -74,33 +69,6 @@ class ScaleConstants(ast.NodeTransformer):
         if node.value:
             node.value *= self.s
         return node
-
-
-def rebuild_func(new_code, frame):
-    new_code = new_code.replace(co_name=new_code.co_name + "__updated")
-    updated_f = FunctionType(
-        code=new_code,
-        globals={
-            **frame.f_func.__globals__,
-            **{
-                fr: frame.f_func.__closure__[i].cell_contents
-                for i, fr in enumerate(frame.f_func.__code__.co_freevars)
-            },
-        },
-        name=frame.f_func.__name__,
-        argdefs=frame.f_func.__defaults__,
-    )
-    updated_f.__qualname__ = frame.f_func.__qualname__
-    updated_f.__annotations__ = frame.f_func.__annotations__
-
-    return updated_f
-
-
-def eval_custom_code(new_code, frame):
-    updated_f = rebuild_func(new_code, frame)
-    args = frame.localsplus[: new_code.co_argcount]
-    pyframe_eval.enable_eval_frame(None, True)
-    return updated_f(*args)
 
 
 def rewrite_callback(frame):
@@ -121,11 +89,6 @@ def rewrite_callback(frame):
     return f_code_o
 
 
-pyframe_eval.set_rewrite_code_callback(None, rewrite_callback)
-pyframe_eval.set_eval_custom_code_callback(None, eval_custom_code)
-pyframe_eval.enable_eval_frame(None, True)
-
-r = foo(2)
-assert r == 99
-
-pyframe_eval.enable_eval_frame(None, False)
+with pyframe_eval.Dynamo(rewrite_callback):
+    r = foo(2)
+    assert r == 99

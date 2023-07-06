@@ -43,7 +43,7 @@ jobs:
       - uses: actions/upload-artifact@v3
         with:
           name: build_artifact
-          path: ./wheelhouse/*.whl
+          path: ./wheelhouse/pyframe*.whl
 
   release:
     runs-on: ubuntu-latest

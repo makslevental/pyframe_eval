@@ -2,3 +2,4 @@ pybind11[global]
 cmake
 ninja
 wheel
+pip

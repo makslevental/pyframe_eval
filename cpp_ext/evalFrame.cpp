@@ -300,7 +300,7 @@ static PyObject *evalFrameTrampoline(PyThreadState *tstate,
   return result;
 }
 
-PYBIND11_MODULE(pyframe_eval, m) {
+PYBIND11_MODULE(_pyframe_eval, m) {
 #define DECLARE_PYOBJ_ATTR(name)                                               \
   .def_property_readonly(                                                      \
       "f_" #name,                                                              \
