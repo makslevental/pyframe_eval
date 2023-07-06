@@ -1,18 +1,12 @@
 #include <pybind11/detail/common.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/pytypes.h>
-#include <pybind11/stl.h>
-#include <pytypedefs.h>
 
 namespace py = pybind11;
 
 #define Py_BUILD_CORE
-#include "cpythonDefs.h"
 #include <internal/pycore_frame.h>
-#include <internal/pycore_pystate.h>
 #undef Py_BUILD_CORE
-
-#include <utility>
 
 #ifdef _WIN32
 #define unlikely(x) (x)
@@ -35,7 +29,7 @@ namespace py = pybind11;
   } else {                                                                     \
   }
 
-//#define DEBUG
+// #define DEBUG
 
 #ifdef DEBUG
 
@@ -133,123 +127,6 @@ void enableEvalFrame(bool enable) {
                                          _PyEval_EvalFrameDefault);
 }
 
-inline static PyObject *evalCustomCode(PyThreadState *tstate,
-                                       _PyInterpreterFrame *frame,
-                                       PyCodeObject *code, int throw_flag) {
-  Py_ssize_t ncells = 0;
-  Py_ssize_t nfrees = 0;
-  Py_ssize_t nlocals_new = code->co_nlocals;
-  Py_ssize_t nlocals_old = frame->f_code->co_nlocals;
-  ncells = code->co_ncellvars;
-  nfrees = code->co_nfreevars;
-  DEBUG_NULL_CHECK(tstate);
-  DEBUG_NULL_CHECK(frame);
-  DEBUG_NULL_CHECK(code);
-  DEBUG_CHECK(nlocals_new >= nlocals_old);
-  DEBUG_CHECK(ncells == frame->f_code->co_ncellvars);
-  DEBUG_TRACE("code->co_nfreevars: %zi, frame->f_code->co_nfreevars: %i",
-              nfrees, frame->f_code->co_nfreevars);
-  DEBUG_CHECK(nfrees == frame->f_code->co_nfreevars);
-
-  // Generate Python function object and _PyInterpreterFrame in a way similar to
-  // https://github.com/python/cpython/blob/e715da6db1d1d70cd779dc48e1ba8110c51cc1bf/Python/ceval.c#L1130
-  PyFunctionObject *func =
-      _PyFunction_CopyWithNewCode((PyFunctionObject *)frame->f_func, code);
-  if (func == nullptr) {
-    return nullptr;
-  }
-
-  size_t size = code->co_nlocalsplus + code->co_stacksize + FRAME_SPECIALS_SIZE;
-  // _EVAL_API_FRAME_OBJECT (_PyInterpreterFrame) is a regular C struct, so
-  // it should be safe to use system malloc over Python malloc, e.g.
-  // PyMem_Malloc
-  _PyInterpreterFrame *shadow =
-      (_PyInterpreterFrame *)malloc(size * sizeof(_PyInterpreterFrame *));
-  if (shadow == nullptr) {
-    Py_DECREF(func);
-    return nullptr;
-  }
-
-  Py_INCREF(func);
-  // consumes reference to func
-  _PyFrame_InitializeSpecials(shadow, func, nullptr, code->co_nlocalsplus);
-
-  PyObject **fastlocals_old = frame->localsplus;
-  PyObject **fastlocals_new = shadow->localsplus;
-
-  // localsplus are XINCREF'd by default eval frame, so all values must be
-  // valid.
-  for (int i = 0; i < code->co_nlocalsplus; i++) {
-    fastlocals_new[i] = nullptr;
-  }
-
-  // copy from old localsplus to new localsplus:
-  // for i, name in enumerate(localsplusnames_new):
-  //   name_to_idx[name] = i
-  // for i, name in enumerate(localsplusnames_old):
-  //   fastlocals_new[name_to_idx[name]] = fastlocals_old[i]
-  PyObject *name_to_idx = PyDict_New();
-  if (name_to_idx == nullptr) {
-    DEBUG_TRACE0("unable to create localsplus name dict");
-    _PyFrame_Clear(shadow);
-    free(shadow);
-    Py_DECREF(func);
-    return nullptr;
-  }
-
-  for (Py_ssize_t i = 0; i < code->co_nlocalsplus; i++) {
-    PyObject *name = PyTuple_GET_ITEM(code->co_localsplusnames, i);
-    PyObject *idx = PyLong_FromSsize_t(i);
-    if (name == nullptr || idx == nullptr ||
-        PyDict_SetItem(name_to_idx, name, idx) != 0) {
-      Py_DECREF(name_to_idx);
-      _PyFrame_Clear(shadow);
-      free(shadow);
-      Py_DECREF(func);
-      return nullptr;
-    }
-  }
-
-  for (Py_ssize_t i = 0; i < frame->f_code->co_nlocalsplus; i++) {
-    PyObject *name = PyTuple_GET_ITEM(frame->f_code->co_localsplusnames, i);
-    PyObject *idx = PyDict_GetItem(name_to_idx, name);
-    Py_ssize_t new_i = PyLong_AsSsize_t(idx);
-    if (name == nullptr || idx == nullptr ||
-        (new_i == (Py_ssize_t)-1 && PyErr_Occurred() != nullptr)) {
-      Py_DECREF(name_to_idx);
-      _PyFrame_Clear(shadow);
-      free(shadow);
-      Py_DECREF(func);
-      return nullptr;
-    }
-    Py_XINCREF(fastlocals_old[i]);
-    fastlocals_new[new_i] = fastlocals_old[i];
-  }
-
-  Py_DECREF(name_to_idx);
-
-  PyObject *result = _PyEval_EvalFrameDefault(tstate, shadow, throw_flag);
-
-  _PyFrame_Clear(shadow);
-  free(shadow);
-  Py_DECREF(func);
-
-  return result;
-}
-
-static size_t dynamic_frame_state_extra_index = -2;
-
-// inline static PyObject *getFrameState(PyCodeObject *code) {
-//   PyObject *extra = nullptr;
-//   _PyCode_GetExtra((PyObject *)code, dynamic_frame_state_extra_index,
-//                    (void **)&extra);
-//   return extra;
-// }
-//
-// inline static void setFrameState(PyCodeObject *code, PyObject *extra) {
-//   _PyCode_SetExtra((PyObject *)code, dynamic_frame_state_extra_index, extra);
-// }
-
 inline bool endsWith(std::string const &value, std::string const &ending) {
   if (ending.size() > value.size())
     return false;
@@ -268,14 +145,12 @@ static PyObject *evalFrameTrampoline(PyThreadState *tstate,
   enableEvalFrame(false);
   PyObject *result = nullptr;
   if (!rewriteCodeCb.is_none() && !endsWith(name_, "__updated")) {
-    enableEvalFrame(false);
     auto maybeCode = rewriteCodeCb(thp);
     DEBUG_TRACE0("done calling rewriteCodeCb");
     if (!maybeCode.is_none()) {
       DEBUG_TRACE0("maybeCode is not None");
       if (!evalCustomCodeCb.is_none()) {
         DEBUG_TRACE0("evalCustomCodeCb is not None");
-        enableEvalFrame(false);
         auto res = evalCustomCodeCb(maybeCode, thp);
         if (res && !res.is_none()) {
           DEBUG_TRACE0("res is not None");
@@ -283,10 +158,6 @@ static PyObject *evalFrameTrampoline(PyThreadState *tstate,
         } else {
           DEBUG_TRACE0("res is None");
         }
-      } else {
-        auto code = (PyCodeObject *)(maybeCode.ptr());
-        enableEvalFrame(true);
-        result = evalCustomCode(tstate, frame, code, exc);
       }
     }
   }

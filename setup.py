@@ -113,7 +113,7 @@ class CMakeBuild(build_ext):
         )
 
 
-__version__ = "0.0.2"
+__version__ = "0.0.3"
 
 install_reqs = parse_requirements("requirements.txt", session="hack")
 
