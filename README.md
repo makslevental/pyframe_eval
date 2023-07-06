@@ -1,36 +1,35 @@
-# Demo of [PEP 523 – Adding a frame evaluation API to CPython](https://peps.python.org/pep-0523/)
+# A `dynamo` of our very own
 
-A minimal example for how to use PEP 523 to intercept stackframe evaluation in Python. Roughly adapted
-from [torch/csrc/dynamo/eval_frame.c](https://github.com/pytorch/pytorch/blob/e9d2d74f0abe4b0e0f238e11b537c64041b3f9a7/torch/csrc/dynamo/eval_frame.c).
+* [Explanation](#explanation)
+* [Build/Install](#build-install)
+* [Demo](#demo)
+* [Meme that metaphorically illustrates](#meme-that-metaphorically-illustrates)
 
-# Build
+## Explanation
 
-```shell
-pip install -r requirements.txt
-mkdir build && \
-  cmake -DPython3_EXECUTABLE=$(which python3) \
-    -DCMAKE_CXX_COMPILER=clang++ \
-    -DCMAKE_INSTALL_PREFIX=$(pwd) \
-    -B build -S $(pwd)
-cmake --build build --target install
-```
+This repo is a dirty implementation of the the same [dynamo functionality](https://pytorch.org/docs/stable/dynamo/index.html) that's available in PyTorch 2.0, i.e., custom stackframe evaluation/jitting.
 
-This will deposit `pyframe_eval.cpython-311-x86_64-linux-gnu.so` (or something like that) here.
+It uses the same exact CPython features[^1] as PyTorch but includes none of the NN stuff (nor any guarantees).
+Importantly, it only does the bare minimum[^2] in C/C++ and implements the rest in python so that it's fully extensible without recompile or C/C++.
 
-# Run
+## Build/Install
 
 ```shell
-python main.py
+pip install . -v
 ```
 
-should print
+There are also wheels on the [release page](https://github.com/makslevental/pyframe_eval/releases).
 
-```shell
-# smoke test (i.e., before AST rewrite)
-frame func <function foo at 0x7f23adad0220>
-frame code obj <code object foo at 0x7f23ae571020, file "/home/mlevental/dev_projects/pyframe_eval/main.py", line 32>
-3
-# after ast rewrite (scale all constants by 10)
-30
-```
+## Demo
+
+See [test.py](tests%2Ftest.py).
+
+[^1]: [PEP 523 – Adding a frame evaluation API to CPython](https://peps.python.org/pep-0523/).
+[^2]: Basically just a connection to `_PyInterpreterState_SetEvalFrameFunc`.
+
+## Meme that metaphorically illustrates
+
+<p align="center">
+  <img width="500" src="https://github.com/makslevental/nelli/assets/5657668/083438e2-cc4b-46c8-8887-d0cf7c1623d7  " alt="">
+</p>    
 
