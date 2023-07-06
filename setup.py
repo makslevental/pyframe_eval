@@ -1,5 +1,6 @@
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -38,6 +39,17 @@ class CMakeBuild(build_ext):
 
         CXX = os.environ.get("CXX", "clang++")
         CC = os.environ.get("CC", "clang")
+
+        if "clang++" not in CXX:
+            raise ValueError(f"only clang++ supported, not {CXX=}")
+        if "clang" not in CC:
+            raise ValueError(f"only clang supported, not {CC=}")
+
+        if shutil.which(CXX) is None:
+            raise ValueError(f"couldn't find {CXX=}")
+        if shutil.which(CC) is None:
+            raise ValueError(f"couldn't find {CC=}")
+
         cmake_args = [
             f"-DCMAKE_CXX_COMPILER={CXX}",
             # https://bugs.python.org/issue23644
