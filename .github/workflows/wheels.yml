@@ -83,3 +83,16 @@ jobs:
           allowUpdates: true
           replacesArtifacts: true
           removeArtifacts: false
+
+      - name: Upload tarballs
+        uses: ncipollo/release-action@v1
+        with:
+          artifacts: "./wheelhouse/*.whl"
+          bodyFile: body.md
+          token: "${{ secrets.GITHUB_TOKEN }}"
+          tag: "latest"
+          name: "latest"
+          allowUpdates: true
+          replacesArtifacts: true
+          removeArtifacts: false
+          makeLatest: true
