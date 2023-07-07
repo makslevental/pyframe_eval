@@ -1,41 +1,49 @@
-from types import FunctionType
+import functools
+import inspect
+import types
+
 from ._pyframe_eval import (
-    set_rewrite_code_callback,
+    add_to_skiplist,
     enable_eval_frame,
     set_eval_custom_code_callback,
+    set_rewrite_code_callback,
 )
 
 
-def rebuild_func(new_code, frame):
-    new_code = new_code.replace(co_name=new_code.co_name + "__updated")
-    updated_f = FunctionType(
-        code=new_code,
-        globals={
-            **frame.f_func.__globals__,
-            **{
-                fr: frame.f_func.__closure__[i].cell_contents
-                for i, fr in enumerate(frame.f_func.__code__.co_freevars)
-            },
-        },
-        name=frame.f_func.__name__,
-        argdefs=frame.f_func.__defaults__,
+def copy_func(f, new_code):
+    """Based on http://stackoverflow.com/a/6528148/190597 (Glenn Maynard)"""
+    g = types.FunctionType(
+        new_code,
+        f.__globals__,
+        name=f.__name__,
+        argdefs=f.__defaults__,
+        closure=f.__closure__,
     )
-    updated_f.__qualname__ = frame.f_func.__qualname__
-    updated_f.__annotations__ = frame.f_func.__annotations__
-
-    return updated_f
+    g = functools.update_wrapper(g, f)
+    g.__kwdefaults__ = f.__kwdefaults__
+    g.__dict__.update(f.__dict__)
+    return g
 
 
 def eval_custom_code(new_code, frame):
-    updated_f = rebuild_func(new_code, frame)
-    args = frame.localsplus[: new_code.co_argcount]
+    new_code = new_code.replace(co_name=new_code.co_name + "__updated")
+    updated_f = copy_func(frame.f_func, new_code)
+    arg_info = inspect.getargvalues(frame)
+    localsplus = dict(zip(frame.localsplusnames, frame.localsplus))
+    posargs = [localsplus[a] for a in arg_info.args]
+    varargs = localsplus[arg_info.varargs] if arg_info.varargs is not None else []
+    kwargs = localsplus[arg_info.keywords] if arg_info.keywords is not None else {}
     enable_eval_frame(None, True)
-    return updated_f(*args)
+    return updated_f(*posargs, *varargs, **kwargs)
 
 
 class Dynamo:
-    def __init__(self, callback):
+    def __init__(self, callback, skips=None):
+        if skips is None:
+            skips = []
         self.callback = callback
+        if len(skips):
+            add_to_skiplist(None, skips)
 
     def __enter__(self):
         set_rewrite_code_callback(None, self.callback)
